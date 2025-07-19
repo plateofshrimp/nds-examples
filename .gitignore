@@ -1,4 +1,5 @@
 .*/
+*.code-workspace
 *.nds
 *.elf
 *build

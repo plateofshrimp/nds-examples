@@ -1,0 +1,2 @@
+make -j 4 && melonDS freetype.nds
+
