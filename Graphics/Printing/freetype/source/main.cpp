@@ -3,21 +3,21 @@
 Basic FreeType tests to validate the devkitARM package and loose builds.
 
 ---------------------------------------------------------------------------------*/
+#include "main.h"
+
 #include <dirent.h>
 #include <fat.h>
+#include <ft2build.h>
+#include FT_FREETYPE_H
+#include FT_CACHE_H
 #include <nds.h>
 #include <stdio.h>
 
-#include "ft2build.h"
-#include FT_FREETYPE_H
-#include FT_CACHE_H
 
-// melonDS needs to point to a FAT disk image containing this file.
-#define FONTFILE "/font/LiberationSans-Regular.ttf"
-
-void print_bitmap(FT_Bitmap bitmap) {
+void print(FT_Bitmap bitmap) {
 	//! Crops (upper-left) bitmaps to fit the console.
 	FT_UInt max = 8;
+
     printf("bitmap is %dx%d pitch %d\n", bitmap.width, bitmap.rows, bitmap.pitch);
     if (!bitmap.buffer) {
         printf("no bitmap buffer\n");
@@ -32,14 +32,21 @@ void print_bitmap(FT_Bitmap bitmap) {
     }
 }
 
-void print_bitmap(FT_Bitmap bitmap, u8* origin) {
-	//! {origin} is some offset into VRAM
+void display(FT_Bitmap bitmap, u16* gfx,
+    bool as_white_box = false) {
+	//! Crops (upper-left) bitmaps to fit the console.
+    
+    if (!bitmap.buffer) return;
     for (u8 row = 0; row < bitmap.rows; row++) {
         for (u8 col = 0; col < bitmap.width; col++) {
-            u8 pixel = bitmap.buffer[row * bitmap.pitch + col];
-			origin[row * SCREEN_WIDTH + col] = pixel;
+            if (as_white_box)
+                gfx[row * SCREEN_WIDTH + col] = RGB15(31, 31, 31) | BIT(15);
+            else {
+                u8 a = bitmap.buffer[row * bitmap.pitch + col];
+                if (a)
+                    gfx[row * SCREEN_WIDTH + col] = RGB15(a, a, a) | BIT(15);
+            }
         }
-        printf("\n");
     }
 }
 
@@ -68,21 +75,20 @@ FT_Error load_glyph(FT_Face face, FT_UInt glyph_index) {
     return error;
 }
 
-FT_Error set_sizes(FT_Face face, FT_UInt size = 12) {
-
+FT_Error set_size(FT_Face face, FT_UInt size = 12) {
     FT_Error error = FT_Set_Pixel_Sizes(face, size, size);
 	if (error) {
 		printf("FT_Set_Pixel_Sizes error=%d\n", error);
 		error = FT_Set_Char_Size(face,
-						10 << 6,
-						10 << 6,
+						size << 6,
+						size << 6,
 						72,
 						72);
 	}
 	return error;
 }
 
-FT_Error request_pixel_size(FT_Face face, FT_UInt size = 12) {
+FT_Error request_size(FT_Face face, FT_UInt size = 12) {
 	//! Request a pixel size.  Call this before rasterizing.
 
     FT_Size_RequestRec s;
@@ -98,37 +104,21 @@ FT_Error request_pixel_size(FT_Face face, FT_UInt size = 12) {
     return error;
 }
 
-void pause(FT_UInt jiffies) {
-  //! A jiffie is 1 vertical blanking period.
-  // Blocking, so no I/O etc while spinning.
-
-  int timer = jiffies;
-  while (pmMainLoop() && timer) {
-    swiWaitForVBlank();
-    timer--;
-  }
-}
-
-int render_glyph(FT_ULong charcode)
-{
-	//! Actually prints the glyph for {charcode} to the console.
-
-	FT_Error error;
-
-    FT_Library library;
-    error = FT_Init_FreeType(&library);
-    if (error) { printf("FT_Init_FreeType error=%d\n", error); return error; }
+FT_Error open_face(FT_Library &library, FT_Face &face) {
+    FT_Error error;
+    char pathname[64];
+    
+    strncpy(pathname, FONTFILE, 63);
 
     FT_Open_Args args;
     args.flags = FT_OPEN_PATHNAME;
-    char pathname[64];
-    strncpy(pathname, FONTFILE, 63);
     args.pathname = pathname;
-	printf("path=%s\n", args.pathname);
 
-    FT_Face face;
     error = FT_Open_Face(library, &args, 0, &face);
-    if(error) printf("FT_Open_Face error=%d\n", error);
+    if(error) {
+        printf("FT_Open_Face error=%d\n", error);
+        return error;
+    }
 
     printf("family=%s\n"
 	   "faces=%ld\n"
@@ -140,7 +130,14 @@ int render_glyph(FT_ULong charcode)
 	   face->num_faces, face->num_glyphs, 
 	   face->num_fixed_sizes, face->num_charmaps,
 	   face->charmap[0].encoding == FT_ENCODING_UNICODE ? "unicode" : "not unicode");
-	
+
+    return error;
+}
+
+#if 0
+int load(FT_Library &library, FT_ULong charcode) {
+	FT_Error error;
+
 	// Select the Unicode character map, our charcode is in Unicode.
     error = FT_Select_Charmap(face, FT_ENCODING_UNICODE);
     if(!error) printf("selected unicode charmap\n");
@@ -150,14 +147,14 @@ int render_glyph(FT_ULong charcode)
 	printf("charcode %ld is glyph %d\n", charcode, glyph_index);
    
 	// Assure that a glyph size is established before rasterization.
-    error = request_pixel_size(face, 24);  // not points.
-	if (error) printf("request_size error=%d\n", error);
+    error = request_size(face, 24);
+    if (error) {
+        printf("request_size error=%d\n", error);
+        error = set_size(face, 24);
+        if (error) printf("set_size error=%d\n", error);
+    }
 
-    // error = set_sizes(face);
-	// 10 pixels at 72 DPI.
-    // error = FT_Set_Char_Size(face, 10 << 6, 0, 72, 0);
-
-	// The EM should be roughly the size.
+	// The EM size should be roughly the requested size.
     printf("x_ppem=%d y_ppem=%d\n",
         face->size->metrics.x_ppem,
         face->size->metrics.y_ppem);
@@ -171,154 +168,119 @@ int render_glyph(FT_ULong charcode)
     error = FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL);
     if(error) { printf("FT_Render_Glyph error=%xl\n", error); return error; }
 
-    print_bitmap(face->glyph->bitmap);
-
-    FT_Done_FreeType(library);
     return error;
 }
+#endif
 
-typedef struct FaceIDRec_ {
-    const char* file_path;
-    FT_ULong    face_index;
-} FaceIDRec, *FaceID;
+void pause(FT_UInt jiffies) {
+  //! A jiffie is 1 vertical blanking period.
+  // Blocking, so no I/O etc while spinning.
 
-static FT_Error
-TextFaceRequester(
-    FTC_FaceID  face_id,
-    FT_Library  library,
-    FT_Pointer  request_data,
-    FT_Face*    aface )
-{
-	FaceID face = (FaceID)face_id;
-	return FT_New_Face(library,
-		face->file_path,
-		face->face_index,
-		aface);
-}
-
-int render_glyph_with_cache()
-{
-    // Render a glyph from a font using FreeType's cache sub-system.
-
-    FT_Error error;
-
-    FT_Library library;
-    FT_Init_FreeType(&library);
-
-    FTC_Manager manager;
-	FTC_Manager_New(library,
-        0, 0, 0,
-	&TextFaceRequester, NULL,
-        &manager);
-
-    FTC_ImageCache  imagecache;
-	FTC_ImageCache_New(manager, &imagecache);
-
-    FTC_SBitCache sbitcache;
-	FTC_SBitCache_New(manager, &sbitcache);
-
-    FTC_CMapCache cmapcache;
-	FTC_CMapCache_New(manager, &cmapcache);
-
-    // Author the request structs.
-
-    FaceIDRec id;
-    id.file_path = FONTFILE;
-    id.face_index = 0;
-    FTC_FaceID face_id = (FTC_FaceID)&id;
-
-    FTC_ImageTypeRec rec;
-    rec.face_id = face_id;
-    rec.flags = FT_LOAD_DEFAULT;
-    rec.height = 12; // Example height
-    rec.width = 0;   // Width can be 0 for variable width fonts
-    const FTC_ImageType imagetype = &rec;
-
-    const FT_UInt32 codepoint = 0x0046; // UCS 'F'
-
-    FT_Face face;
-    error = FTC_Manager_LookupFace(manager, face_id, &face);
-
-    if (error)
-        printf("FTC_Manager_LookupFace error(%d)\n", error);
-    else
-        printf("%s\n%ld face(s)\n", face->family_name, face->num_faces);
-
-    // Get the glyph index for the codepoint.
-
-    FT_UInt glyph_index = FTC_CMapCache_Lookup(cmapcache, face_id, -1, codepoint);
-
-    printf("char=%d glyph=%d\n", codepoint, glyph_index);
-
-    // Get a glyph from the image cache.
-
-    FT_Glyph glyph = nullptr;
-    FTC_Node n1;
-    error = FTC_ImageCache_Lookup(imagecache, imagetype, glyph_index, &glyph, &n1);
-
-    if (error)
-        printf("%d\n", error);
-    else
-        printf("Glyph:\n"
-            "  Advance: %f\n",
-            glyph->advance.x / 65336.0);
-
-    // Assure that there is a bitmap.
-
-    if ( glyph->format != FT_GLYPH_FORMAT_BITMAP ) {
-        error = FT_Glyph_To_Bitmap( &glyph, FT_RENDER_MODE_LCD_V, 0, 1 );
-        if (error)
-            printf("FT_Glyph_To_Bitmap had no effect (%d)\n", error);
-    }
-
-    FT_BitmapGlyph bitmap_glyph = (FT_BitmapGlyph)glyph;
-    printf("Bitmap:\n"
-	   "  Size: %dx%d\n"
-	   "  Left: %d\n"
-	   "  Top: %d\n",
-	   bitmap_glyph->bitmap.width, bitmap_glyph->bitmap.rows,
-	   bitmap_glyph->left, bitmap_glyph->top);
-
-    // Alternately, get a small bitmap from the sbit cache.
-
-    FTC_SBit sbit;
-    FTC_Node n2;
-    error = FTC_SBitCache_Lookup(sbitcache, imagetype, glyph_index, &sbit, &n2);
-
-    printf("FTC_SBitCache_Lookup error=%d\n", error);
-    
-    if (glyph)
-        FT_Done_Glyph(glyph);
-    FT_Done_FreeType(library);
-
-    return error;
+  int timer = jiffies;
+  while (pmMainLoop() && timer) {
+    swiWaitForVBlank();
+    timer--;
+  }
 }
 
 int main(void) {
 	touchPosition touchXY;
 
-	defaultExceptionHandler();
+    // Enable this to get an address at crash.
+	// defaultExceptionHandler();
+
+    //set the mode for 2 text layers and two extended background layers
+	videoSetMode(MODE_5_2D);
+
+    // Set the first two banks as background memory and the third as sub background memory.
+	// D is not used.
+    // If you need a bigger background, then you will need to map more vram banks consecutively.
+    // VRAM A-D are all 0x20000 bytes in size.
+	vramSetPrimaryBanks(
+        VRAM_A_MAIN_BG_0x06000000, 
+        VRAM_B_MAIN_BG_0x06020000,
+		VRAM_C_SUB_BG,
+        VRAM_D_LCD);
+
+    int bg = bgInit(3, BgType_Bmp16, BgSize_B16_256x256, 0,0);
+	u16* backBuffer = (u16*)bgGetGfxPtr(bg) + 256*256;
+
 	consoleDemoInit();
 
-	// Font is stored in DLDI FAT.
 	auto success = fatInitDefault();
 	if(!success) {
-		fprintf(stderr, "no filesystem\n");
-		return 1;
-	}
+		printf("no filesystem\n");
+        pause(120); return 1;
+    }
 
-	render_glyph('F');
-	// render_glyph_with_cache('F');
+    FT_Error error;
+    FT_Library library;
+    FT_Face face;
+    FT_UInt glyph_index;
+    FT_Bitmap *bitmap = nullptr;
+
+    FT_UInt charcode = 'F';
+
+    error = FT_Init_FreeType(&library);
+        if (error) {
+            printf("FT_Init_FreeType error=%d\n", error);
+            pause(120); return 1;
+    }
+
+    error = open_face(library, face);
+
+    // Load {charcode}'s bitmap into {face}'s slot.
+
+    // Select the Unicode character map, our charcode is in Unicode.
+    error = FT_Select_Charmap(face, FT_ENCODING_UNICODE);
+    if(!error) printf("selected unicode charmap\n");
+
+	// Now we can find out which glyph represents this character code.
+	glyph_index = FT_Get_Char_Index(face, charcode);
+	printf("charcode %ld is glyph %d\n", charcode, glyph_index);
+   
+	// Assure that a glyph size is established before rasterization.
+    error = request_size(face, 24);
+    if (error) {
+        printf("request_size error=%d\n", error);
+        error = set_size(face, 24);
+        if (error) printf("set_size error=%d\n", error);
+    }
+
+	// The EM size should be roughly the requested size.
+    printf("x_ppem=%d y_ppem=%d\n",
+        face->size->metrics.x_ppem,
+        face->size->metrics.y_ppem);
+
+	// Put the outline in the glyph slot.
+    // error = load_glyph(face, glyph_index);
+    error = FT_Load_Char(face, charcode, FT_LOAD_DEFAULT);
+    if(error) { printf("FT_Load_Char error=0x%x\n", error); pause(1); }
+
+	// Create a bitmap in the glyph slot.
+    error = FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL);
+    if(error) { printf("FT_Render_Glyph error=%xl\n", error); pause(1); }
+
+    print(face->glyph->bitmap);
 
 	while(pmMainLoop()) {
 
-		swiWaitForVBlank();
+        // Print the bitmap to the console and background.
+        display(face->glyph->bitmap, backBuffer);
+		
+        swiWaitForVBlank();
 		scanKeys();
 		int keys = keysDown();
 		if (keys & KEY_START) break;
-
 		touchRead(&touchXY);
+
+        // Swap the back buffer to the current buffer.
+		backBuffer = (u16*)bgGetGfxPtr(bg);
+
+        // Swap the current buffer by changing the base.
+        bgGetMapBase(bg) == 8 ? bgSetMapBase(bg, 0) : bgSetMapBase(bg, 8);
 	}
 
+    FT_Done_FreeType(library);
 	return 0;
 }

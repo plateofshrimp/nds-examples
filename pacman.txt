@@ -1,4 +1,5 @@
 dswifi
 maxmod-nds
 mmutil
+nds-freetype
 
