@@ -1,8 +1,8 @@
-/*---------------------------------------------------------------------------------
+/*-----------------------------------------------------------------------------
 
 Basic FreeType tests to validate the devkitARM package and loose builds.
 
----------------------------------------------------------------------------------*/
+-----------------------------------------------------------------------------*/
 #include "main.h"
 
 #include <dirent.h>
@@ -18,7 +18,8 @@ void print(FT_Bitmap bitmap) {
 	//! Crops (upper-left) bitmaps to fit the console.
 	FT_UInt max = 8;
 
-    printf("bitmap is %dx%d pitch %d\n", bitmap.width, bitmap.rows, bitmap.pitch);
+    printf("bitmap is %dx%d pitch %d\n",
+        bitmap.width, bitmap.rows, bitmap.pitch);
     if (!bitmap.buffer) {
         printf("no bitmap buffer\n");
         return;
@@ -46,6 +47,15 @@ void display(FT_Bitmap bitmap, u16* gfx,
                 if (a)
                     gfx[row * SCREEN_WIDTH + col] = RGB15(a, a, a) | BIT(15);
             }
+        }
+    }
+}
+
+void clear(u16* gfx) {
+    u16 color = RGB15(0, 0, 0) | BIT(15);
+    for (u8 row = 0; row < SCREEN_HEIGHT; row++) {
+        for (u8 col = 0; col < SCREEN_WIDTH; col++) {
+            gfx[row * SCREEN_WIDTH + col] = color;
         }
     }
 }
@@ -121,62 +131,27 @@ FT_Error open_face(FT_Library &library, FT_Face &face) {
     }
 
     printf("family=%s\n"
-	   "faces=%ld\n"
-	   "glyphs=%ld\n"
-	   "fixed_sizes=%d\n"
-	   "charmaps=%d\n"
-	   "charmap[0] is %s\n",
-	   face->family_name,
-	   face->num_faces, face->num_glyphs, 
-	   face->num_fixed_sizes, face->num_charmaps,
-	   face->charmap[0].encoding == FT_ENCODING_UNICODE ? "unicode" : "not unicode");
+	    "faces=%ld glyphs=%ld\n"
+	    "fixed_sizes=%d charmaps=%d\n",
+	    face->family_name,
+	    face->num_faces, face->num_glyphs, 
+	    face->num_fixed_sizes, face->num_charmaps);
 
-    return error;
-}
-
-#if 0
-int load(FT_Library &library, FT_ULong charcode) {
-	FT_Error error;
-
-	// Select the Unicode character map, our charcode is in Unicode.
-    error = FT_Select_Charmap(face, FT_ENCODING_UNICODE);
-    if(!error) printf("selected unicode charmap\n");
-
-	// Now we can find out which glyph represents this character code.
-	FT_UInt glyph_index = FT_Get_Char_Index(face, charcode);
-	printf("charcode %ld is glyph %d\n", charcode, glyph_index);
-   
-	// Assure that a glyph size is established before rasterization.
-    error = request_size(face, 24);
-    if (error) {
-        printf("request_size error=%d\n", error);
-        error = set_size(face, 24);
-        if (error) printf("set_size error=%d\n", error);
+    char magic[5];
+    for (int i = 0; i < face->num_charmaps; i++) {
+        glyph_format_as_magic(face->charmap[i].encoding, magic);
+        magic[4] = 0;
+        printf("encoding%d=%s\n", i, magic);
     }
 
-	// The EM size should be roughly the requested size.
-    printf("x_ppem=%d y_ppem=%d\n",
-        face->size->metrics.x_ppem,
-        face->size->metrics.y_ppem);
-
-	// Put the outline in the glyph slot.
-    // error = load_glyph(face, glyph_index);
-    error = FT_Load_Char(face, charcode, FT_LOAD_DEFAULT);
-    if(error) { printf("FT_Load_Char error=0x%x\n", error); return error; }
-
-	// Create a bitmap in the glyph slot.
-    error = FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL);
-    if(error) { printf("FT_Render_Glyph error=%xl\n", error); return error; }
-
     return error;
 }
-#endif
 
-void pause(FT_UInt jiffies) {
-  //! A jiffie is 1 vertical blanking period.
+void pause(FT_UInt vblanks) {
+  //! Spin for {vblanks} vertical blanking periods.
   // Blocking, so no I/O etc while spinning.
 
-  int timer = jiffies;
+  int timer = vblanks;
   while (pmMainLoop() && timer) {
     swiWaitForVBlank();
     timer--;
@@ -184,8 +159,6 @@ void pause(FT_UInt jiffies) {
 }
 
 int main(void) {
-	touchPosition touchXY;
-
     // Enable this to get an address at crash.
 	// defaultExceptionHandler();
 
@@ -213,20 +186,17 @@ int main(void) {
         pause(120); return 1;
     }
 
-    FT_Error error;
+    FT_UInt16 charcode = 70; // Unicode 0x0046 'F'
+    FT_Int size = 48; // pixels
+
     FT_Library library;
-    FT_Face face;
-    FT_UInt glyph_index;
-    FT_Bitmap *bitmap = nullptr;
-
-    FT_UInt charcode = 'F';
-
-    error = FT_Init_FreeType(&library);
+    FT_Error error = FT_Init_FreeType(&library);
         if (error) {
             printf("FT_Init_FreeType error=%d\n", error);
             pause(120); return 1;
     }
 
+    FT_Face face;
     error = open_face(library, face);
 
     // Load {charcode}'s bitmap into {face}'s slot.
@@ -236,50 +206,64 @@ int main(void) {
     if(!error) printf("selected unicode charmap\n");
 
 	// Now we can find out which glyph represents this character code.
-	glyph_index = FT_Get_Char_Index(face, charcode);
-	printf("charcode %ld is glyph %d\n", charcode, glyph_index);
+    	FT_UInt glyph_index = FT_Get_Char_Index(face, charcode);
+	printf("charcode 0x%04x is glyph %d\n", charcode, glyph_index);
    
 	// Assure that a glyph size is established before rasterization.
-    error = request_size(face, 24);
+    error = request_size(face, size);
     if (error) {
         printf("request_size error=%d\n", error);
-        error = set_size(face, 24);
+        error = set_size(face, size);
         if (error) printf("set_size error=%d\n", error);
     }
 
-	// The EM size should be roughly the requested size.
+    // The EM size should be roughly the requested size.
     printf("x_ppem=%d y_ppem=%d\n",
         face->size->metrics.x_ppem,
         face->size->metrics.y_ppem);
 
-	// Put the outline in the glyph slot.
+    // Put the outline in the glyph slot.
     // error = load_glyph(face, glyph_index);
     error = FT_Load_Char(face, charcode, FT_LOAD_DEFAULT);
     if(error) { printf("FT_Load_Char error=0x%x\n", error); pause(1); }
 
-	// Create a bitmap in the glyph slot.
+    // Create a bitmap in the glyph slot.
     error = FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL);
     if(error) { printf("FT_Render_Glyph error=%xl\n", error); pause(1); }
 
+    // printf("width=%d pitch=%d\n",
+    //     face->glyph->bitmap.width,
+    //     face->glyph->bitmap.pitch);
+
     print(face->glyph->bitmap);
+
+    // Roughly centered.
+    int h = face->glyph->bitmap.rows;
+    int w = face->glyph->bitmap.width;
+    int offset =
+        (SCREEN_WIDTH * (SCREEN_HEIGHT - (h / 2)) / 2)
+        + (SCREEN_WIDTH / 2 - (w / 2));
 
 	while(pmMainLoop()) {
 
         // Print the bitmap to the console and background.
-        display(face->glyph->bitmap, backBuffer);
+        // clear(backBuffer);
+        display(face->glyph->bitmap, backBuffer + offset);
 		
         swiWaitForVBlank();
-		scanKeys();
+		
+        scanKeys();
 		int keys = keysDown();
 		if (keys & KEY_START) break;
-		touchRead(&touchXY);
+        if (keys & KEY_RIGHT) offset++;
+        if (keys & KEY_DOWN) offset += SCREEN_WIDTH;
 
         // Swap the back buffer to the current buffer.
 		backBuffer = (u16*)bgGetGfxPtr(bg);
 
         // Swap the current buffer by changing the base.
         bgGetMapBase(bg) == 8 ? bgSetMapBase(bg, 0) : bgSetMapBase(bg, 8);
-	}
+    }
 
     FT_Done_FreeType(library);
 	return 0;
