@@ -26,8 +26,10 @@ ARCH	:=	-march=armv5te -mtune=arm946e-s -mthumb
 
 CFLAGS	:=	-g -Wall -O2 -ffunction-sections -fdata-sections\
 			$(ARCH)
-# CFLAGS  +=	-I$(DEVKITPRO)/portlibs/nds/include/freetype2
+
 CFLAGS  +=	-I$(HOME)/Developer/dslibris/portlibs/nds/include/freetype2
+# CFLAGS  +=	-I$(DEVKITPRO)/portlibs/nds/include/freetype2
+
 CFLAGS	+=	$(INCLUDE) -DARM9
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions
 
@@ -37,8 +39,7 @@ LDFLAGS	=	-specs=ds_arm9.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 #---------------------------------------------------------------------------------
 # any extra libraries we wish to link with the project
 #---------------------------------------------------------------------------------
-LIBS	:= -lnds9 -lfreetype -lfat -lexpat -lz -lbz2 -lpng
-
+LIBS	:= -lnds9 -lfat -lfreetype -lpng -lz -lbz2
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing

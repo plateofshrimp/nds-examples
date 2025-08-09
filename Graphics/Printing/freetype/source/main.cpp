@@ -16,14 +16,12 @@ Basic FreeType tests to validate the devkitARM package and loose builds.
 
 void print(FT_Bitmap bitmap) {
 	//! Crops (upper-left) bitmaps to fit the console.
-	FT_UInt max = 8;
-
-    printf("bitmap is %dx%d pitch %d\n",
-        bitmap.width, bitmap.rows, bitmap.pitch);
     if (!bitmap.buffer) {
         printf("no bitmap buffer\n");
         return;
     }
+ 
+	const FT_UInt max = 8;
     for (u8 row = 0; row < bitmap.rows && row < max; row++) {
         for (u8 col = 0; col < bitmap.width && col < max; col++) {
             unsigned char pixel = bitmap.buffer[row * bitmap.pitch + col];
@@ -33,20 +31,14 @@ void print(FT_Bitmap bitmap) {
     }
 }
 
-void display(FT_Bitmap bitmap, u16* gfx,
-    bool as_white_box = false) {
-	//! Crops (upper-left) bitmaps to fit the console.
-    
-    if (!bitmap.buffer) return;
-    for (u8 row = 0; row < bitmap.rows; row++) {
-        for (u8 col = 0; col < bitmap.width; col++) {
-            if (as_white_box)
-                gfx[row * SCREEN_WIDTH + col] = RGB15(31, 31, 31) | BIT(15);
-            else {
-                u8 a = bitmap.buffer[row * bitmap.pitch + col];
-                if (a)
-                    gfx[row * SCREEN_WIDTH + col] = RGB15(a, a, a) | BIT(15);
-            }
+void display(FT_Bitmap bitmap, u16* gfx) {
+        for (u8 row = 0; row < bitmap.rows; row++) {
+        for (u8 col = 0; col < bitmap.pitch; col++) {
+            u8 a = 255;
+            if (bitmap.buffer)
+                a = bitmap.buffer[row * bitmap.pitch + col];
+            if (a)
+                gfx[row * SCREEN_WIDTH + col] = RGB15(a, a, a) | BIT(15);
         }
     }
 }
@@ -68,20 +60,28 @@ void glyph_format_as_magic(int format, char *magic) {
 }
 
 FT_Error load_glyph(FT_Face face, FT_UInt glyph_index) {
-	
-    FT_Error error = FT_Load_Glyph(face, glyph_index, FT_LOAD_DEFAULT);
-
+	FT_Error error;
+    
+    error = FT_Load_Glyph(face, glyph_index, FT_LOAD_DEFAULT);
     if(error) { printf("FT_Load_Glyph error=%d\n", error); return error; }
+
+    auto advance = face->glyph->advance.x;
+    printf("advance=%ld %ld\n", advance, advance >> 6);
     
     char magic[4];
     glyph_format_as_magic(face->glyph->format, magic);
-    printf("%c%c%c%c bitmap=%dx%d\n", 
-        magic[0], magic[1], magic[2], magic[3],
-        face->glyph->bitmap.width,
-        face->glyph->bitmap.rows
-    );
+    printf("format=%s",
+        face->glyph->format == FT_GLYPH_FORMAT_OUTLINE ? "outline" : "bitmap");
+    printf(" magic=%c%c%c%c\n",
+        magic[0], magic[1], magic[2], magic[3]);
+
+    // Create a bitmap in the glyph slot.
+    error = FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL);
+    if(error) { printf("FT_Render_Glyph error=%xl\n", error); }
     if(!face->glyph->bitmap.buffer)
 	    printf("no bitmap buffer\n");
+    printf("ok\n");
+
     return error;
 }
 
@@ -105,8 +105,8 @@ FT_Error request_size(FT_Face face, FT_UInt size = 12) {
     s.type = FT_SIZE_REQUEST_TYPE_NOMINAL;
     s.width = size << 6;
     s.height = size << 6;
-    s.horiResolution = 0;
-    s.vertResolution = 0;
+    s.horiResolution = 110;
+    s.vertResolution = 110;
     
     FT_Error error = FT_Request_Size(face, &s);
     if(error) printf("FT_Size_Request error=%d\n", error);
@@ -130,10 +130,12 @@ FT_Error open_face(FT_Library &library, FT_Face &face) {
         return error;
     }
 
-    printf("family=%s\n"
+    printf(
+        "family=%s\n"
+        "style=%s\n"
 	    "faces=%ld glyphs=%ld\n"
 	    "fixed_sizes=%d charmaps=%d\n",
-	    face->family_name,
+	    face->family_name, face->style_name,
 	    face->num_faces, face->num_glyphs, 
 	    face->num_fixed_sizes, face->num_charmaps);
 
@@ -160,7 +162,7 @@ void pause(FT_UInt vblanks) {
 
 int main(void) {
     // Enable this to get an address at crash.
-	// defaultExceptionHandler();
+	defaultExceptionHandler();
 
     //set the mode for 2 text layers and two extended background layers
 	videoSetMode(MODE_5_2D);
@@ -198,6 +200,20 @@ int main(void) {
 
     FT_Face face;
     error = open_face(library, face);
+   
+	// Assure that a glyph size is established before rasterization.
+    error = request_size(face, size);
+    if (error) {
+        printf("request_size error=%d\n", error);
+        error = set_size(face, size);
+        if (error) printf("set_size error=%d\n", error);
+    }
+    printf("requested size=%d\n", size);
+
+    // The EM size should be roughly the requested size.
+    printf("x_ppem=%d y_ppem=%d\n",
+        face->size->metrics.x_ppem,
+        face->size->metrics.y_ppem);
 
     // Load {charcode}'s bitmap into {face}'s slot.
 
@@ -208,41 +224,19 @@ int main(void) {
 	// Now we can find out which glyph represents this character code.
     	FT_UInt glyph_index = FT_Get_Char_Index(face, charcode);
 	printf("charcode 0x%04x is glyph %d\n", charcode, glyph_index);
-   
-	// Assure that a glyph size is established before rasterization.
-    error = request_size(face, size);
-    if (error) {
-        printf("request_size error=%d\n", error);
-        error = set_size(face, size);
-        if (error) printf("set_size error=%d\n", error);
-    }
-
-    // The EM size should be roughly the requested size.
-    printf("x_ppem=%d y_ppem=%d\n",
-        face->size->metrics.x_ppem,
-        face->size->metrics.y_ppem);
 
     // Put the outline in the glyph slot.
-    // error = load_glyph(face, glyph_index);
-    error = FT_Load_Char(face, charcode, FT_LOAD_DEFAULT);
-    if(error) { printf("FT_Load_Char error=0x%x\n", error); pause(1); }
+    error = load_glyph(face, glyph_index);
 
-    // Create a bitmap in the glyph slot.
-    error = FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL);
-    if(error) { printf("FT_Render_Glyph error=%xl\n", error); pause(1); }
-
-    // printf("width=%d pitch=%d\n",
-    //     face->glyph->bitmap.width,
-    //     face->glyph->bitmap.pitch);
-
-    print(face->glyph->bitmap);
-
+    auto bitmap = face->glyph->bitmap;
+    print(bitmap);
+    printf("bitmap is %dx%d pitch %d\n",
+        bitmap.width, bitmap.rows, bitmap.pitch);
+ 
     // Roughly centered.
-    int h = face->glyph->bitmap.rows;
-    int w = face->glyph->bitmap.width;
-    int offset =
-        (SCREEN_WIDTH * (SCREEN_HEIGHT - (h / 2)) / 2)
-        + (SCREEN_WIDTH / 2 - (w / 2));
+    int x = SCREEN_WIDTH/2 - bitmap.width/2;
+    int y = SCREEN_HEIGHT/2 - bitmap.rows/2;
+    int offset = y * SCREEN_WIDTH + x;
 
 	while(pmMainLoop()) {
 
@@ -257,7 +251,7 @@ int main(void) {
 		if (keys & KEY_START) break;
         if (keys & KEY_RIGHT) offset++;
         if (keys & KEY_DOWN) offset += SCREEN_WIDTH;
-
+        
         // Swap the back buffer to the current buffer.
 		backBuffer = (u16*)bgGetGfxPtr(bg);
 
